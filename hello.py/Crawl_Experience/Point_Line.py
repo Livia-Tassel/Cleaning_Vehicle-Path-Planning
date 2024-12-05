@@ -6,7 +6,7 @@ import networkx as nx
 import numpy as np
 import random
 from sklearn.cluster import SpectralClustering
-from matplotlib.lines import Line2D
+import heapq
 
 # 定义一个 Graph 类来存储图的结构
 class Graph:
@@ -14,8 +14,8 @@ class Graph:
         self.graph = nx.Graph()  # 使用 networkx 创建一个无向图
         self.node_positions = {}  # 存储节点坐标
         self.edge_dirtiness = {}  # 存储每条边的脏度
-        self.edge_decay = {}  # 存储每条边的脏度变化系数
-        self.cleaners_positions = {}  # 存储清洁车的位置
+        self.edge_decay = {}  # 存储每条边的脏度增长系数
+        self.cleaners_positions = {}  # 用于存储每个清洁车的位置
 
     def add_edge(self, start, end, length):
         """
@@ -26,8 +26,8 @@ class Graph:
         edge_key = (min(start, end), max(start, end))
         # 随机初始化脏度在 [10, 20] 之间
         self.edge_dirtiness[edge_key] = random.uniform(10, 20)
-        # 随机初始化脏度变化系数 a 在 [20, 25] 之间
-        self.edge_decay[edge_key] = random.uniform(20, 25)
+        # 随机初始化脏度增长系数 a 在 [0.5, 1.0] 之间，线性增长
+        self.edge_decay[edge_key] = random.uniform(0.5, 1.0)
 
     def load_edges_from_csv(self, file_path):
         """
@@ -111,109 +111,140 @@ class Graph:
         node_clusters = {node: labels[i] for i, node in enumerate(nodes)}
         return node_clusters
 
-    def calculate_dirtiness(self, edge_key, time):
+    def update_dirtiness(self):
         """
-        计算道路的脏度，使用 alnt 对数函数来计算脏度随时间的变化，脏度最大为 100。
+        在每个时间步更新所有道路的脏度，脏度线性增加
         """
-        initial_dirtiness = self.edge_dirtiness[edge_key]  # 获取该边的初始脏度
-        decay_factor = self.edge_decay[edge_key]  # 获取该边的脏度变化系数
-        dirtiness = initial_dirtiness + decay_factor * math.log(time + 1)  # 使用对数函数计算脏度
-        return min(dirtiness, 100)  # 确保脏度最大为 100
+        for edge_key in self.edge_dirtiness:
+            self.edge_dirtiness[edge_key] += self.edge_decay[edge_key]
+            # 确保脏度最大为100
+            if self.edge_dirtiness[edge_key] > 100:
+                self.edge_dirtiness[edge_key] = 100
 
-    def draw(self, time):
+    def decrease_dirtiness(self, edge_key, amount):
+        """
+        减少指定道路的脏度
+        """
+        if edge_key in self.edge_dirtiness:
+            self.edge_dirtiness[edge_key] = max(0, self.edge_dirtiness[edge_key] - amount)
+
+    def draw(self, ax, node_clusters):
         """
         绘制图，使用 matplot 库进行可视化
         根据脏度随时间变化的计算来动态调整边的颜色和宽度
         """
-        plt.clf()  # 清除当前图形
-        plt.title(f"Time: {time} hours", fontsize=16, fontweight='bold')
+        ax.clear()  # 清除当前图形
+        ax.set_title(f"校园清洁模拟", fontsize=16, fontweight='bold')
 
-        # 设置背景颜色渐变
-        plt.gcf().set_facecolor('whitesmoke')
+        # 设置背景颜色
+        ax.set_facecolor('whitesmoke')
 
-        # 进行聚类并获取区域划分
-        node_clusters = self.cluster_nodes(n_clusters=3)
-
-        # 更新每条边的脏度和颜色
+        # 更新每条边的颜色和宽度
         for edge in self.graph.edges:
             start, end = edge
             edge_key = (min(start, end), max(start, end))
-            dirtiness = self.calculate_dirtiness(edge_key, time)  # 根据时间计算脏度
+            dirtiness = self.edge_dirtiness[edge_key]  # 当前脏度
 
             # 通过脏度映射到颜色和边的宽度（脏度越高，颜色越深，边宽越大）
-            color = plt.cm.Greens(dirtiness / 100)  # 使用绿色 colormap
-            width = 1 + (dirtiness / 100) * 3  # 使脏度越高边宽越大
+            color = plt.cm.Reds(dirtiness / 100)  # 使用红色 colormap
+            width = 1 + (dirtiness / 100) * 4  # 使脏度越高边宽越大
 
             # 计算平滑的直线
             curve_points = self.smooth_line(start, end)
             x_values, y_values = zip(*curve_points)
 
             # 绘制曲线
-            plt.plot(x_values, y_values, color=color, lw=width)  # 绘制边（平滑曲线）
+            ax.plot(x_values, y_values, color=color, lw=width)
 
         # 绘制节点，节点根据聚类进行颜色分配
-        node_size = [self.graph.degree(node) * 30 for node in self.graph.nodes()]  # 减小节点大小
-        colors = ['skyblue' if node_clusters[node] == 0 else 'lightgreen' if node_clusters[node] == 1 else 'salmon' for
-                  node in self.graph.nodes()]
-        nx.draw_networkx_nodes(self.graph, self.node_positions, node_size=node_size, node_color=colors, alpha=0.8)
+        node_size = [self.graph.degree(node) * 50 for node in self.graph.nodes()]  # 调整节点大小
+        colors = []
+        for node in self.graph.nodes():
+            cluster_id = node_clusters[node]
+            if cluster_id == 0:
+                colors.append('skyblue')
+            elif cluster_id == 1:
+                colors.append('lightgreen')
+            else:
+                colors.append('salmon')
+
+        nx.draw_networkx_nodes(self.graph, self.node_positions, node_size=node_size, node_color=colors, alpha=0.8, ax=ax)
 
         # 去除数字标签，不再调用 nx.draw_networkx_labels
         # nx.draw_networkx_labels(self.graph, self.node_positions, font_size=10, font_color="black", font_weight="bold",
-        #                         bbox=dict(facecolor='none', edgecolor='none'))
+        #                         bbox=dict(facecolor='none', edgecolor='none'), ax=ax)
 
-        # Add grid and axis labels
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.xlim(-100, 1100)
-        plt.ylim(-100, 1100)
-        plt.xlabel('X', fontsize=12)
-        plt.ylabel('Y', fontsize=12)
-        # Display the graph
-        plt.tight_layout()  # Adjust the layout of the plot
-        plt.show()
+        # 添加网格和轴标签
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.set_xlim(-100, 1100)
+        ax.set_ylim(-100, 1100)
+        ax.set_xlabel('X', fontsize=12)
+        ax.set_ylabel('Y', fontsize=12)
 
-# 创建图对象并加载数据
-graph = Graph()
-graph.load_edges_from_csv('Edges.csv')  # 加载边数据
-graph.load_points_from_csv('Points.csv')  # 加载点数据
+        # 添加图例
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], marker='o', color='w', label='Cluster 0', markerfacecolor='skyblue', markersize=10),
+            Line2D([0], [0], marker='o', color='w', label='Cluster 1', markerfacecolor='lightgreen', markersize=10),
+            Line2D([0], [0], marker='o', color='w', label='Cluster 2', markerfacecolor='salmon', markersize=10)
+        ]
+        ax.legend(handles=legend_elements, loc='upper right')
 
-# 随机初始化清洁车在每个区域内的起始位置
-n_clusters = 3  # 区域数
-node_clusters = graph.cluster_nodes(n_clusters=n_clusters)
+# 定义 Cleaner 类
+class Cleaner:
+    def __init__(self, graph, speed=None, start_node=None, cleaner_id=0):
+        """
+        初始化清洁车
+        graph: 图对象
+        speed: 清洁车的速度，单位：米/秒，随机在[1, 1.5]范围内
+        start_node: 清洁车的起始位置
+        cleaner_id: 清洁车的唯一ID
+        """
+        self.graph = graph  # 图对象
+        self.speed = random.uniform(1, 1.5) if speed is None else speed  # 清洁车速度随机初始化
+        self.cleaned_edges = set()  # 记录已清扫的边
+        self.current_node = start_node  # 当前节点
+        self.path = []  # 清洁车的路径
+        self.progress = 0  # 当前路径上的进度（0到1之间）
+        self.cleaner_id = cleaner_id  # 清洁车ID
 
-# 初始化清洁车
-cleaners = []
-for cluster_id in range(n_clusters):
-    # 获取当前区域的节点
-    nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
-    if nodes_in_cluster:
-        # 随机选择一个节点作为清洁车的起始位置
-        start_node = random.choice(nodes_in_cluster)
-        graph.cleaners_positions[cluster_id] = graph.node_positions[start_node]
+    def set_path(self, path):
+        """ 设置清洁车的路径 """
+        self.path = path
+        self.progress = 0  # 重置路径进度
 
-        # 这里用 enumerate() 给每个清洁车分配一个唯一的 id
-        cleaner_id = cluster_id  # 使用 cluster_id 作为清洁车的 id
-        cleaners.append({
-            'id': cleaner_id,  # 使用 cleaner_id 代替 undefined variable
-            'current_position': start_node,
-            'path': [],  # 存储清洁车的路径
-            'cleaned_edges': set()  # 记录清洁过的边
-        })
+    def move(self):
+        """
+        清洁车沿路径移动，每次移动到下一个节点，并更新经过路径的脏度。
+        """
+        if not self.path:
+            return  # 如果没有路径，停止移动
 
-# A* 算法，用于规划清洁车的路径
-import heapq
+        next_node = self.path.pop(0)  # 获取下一个节点
+        edge_key = (min(self.current_node, next_node), max(self.current_node, next_node))
 
+        # 清洁车经过的边脏度减少[10-20]
+        dirtiness_decrease = random.uniform(10, 20)  # 脏度减少范围
+        self.graph.decrease_dirtiness(edge_key, dirtiness_decrease)
+
+        # 更新当前节点
+        self.current_node = next_node
+
+    def get_position(self):
+        """
+        返回清洁车的当前位置（当前节点）
+        """
+        return self.graph.node_positions[self.current_node]
 
 def astar(graph, start, end):
     """
-    A* 算法，用于找到从起点到终点的最短路径。
+    使用A*算法计算从起点到终点的最短路径
     """
-
-    # 获取节点的坐标位置
     def heuristic(node, end):
-        # 使用曼哈顿距离作为启发式函数
+        # 使用欧几里得距离作为启发式函数
         x1, y1 = graph.node_positions[node]
         x2, y2 = graph.node_positions[end]
-        return abs(x1 - x2) + abs(y1 - y2)
+        return math.hypot(x2 - x1, y2 - y1)
 
     # 初始化开放列表、关闭列表和父节点字典
     open_list = []
@@ -230,6 +261,7 @@ def astar(graph, start, end):
             while current_node in came_from:
                 path.append(current_node)
                 current_node = came_from[current_node]
+            path.append(start)
             return path[::-1]  # 返回反向路径
 
         for neighbor in graph.graph.neighbors(current_node):
@@ -245,63 +277,89 @@ def astar(graph, start, end):
 
     return []  # 如果没有路径
 
-
-def plan_cleaning_paths(graph, cleaners, time):
+def plan_cleaning_paths(graph, cleaners, node_clusters):
     """
-    This function plans and draws the cleaning paths for all cleaners.
-    It ensures that each cleaner covers all the roads in its region.
+    为每个清洁车规划路径，确保覆盖其所属区域内的所有边
     """
-    time = int(time)  # Convert time to an integer to avoid slicing errors
-    start_time = int(time - 1)  # Get the start time for the previous hour
-    # plt.clf()
-
-    # Iterate through each cleaner to draw its cleaning path
     for cleaner in cleaners:
-        # Ensure the cleaner has a path and slice it based on the current and previous hour
-        if 'path' in cleaner and cleaner['path']:
-            # Get the path segment for the current time frame (previous hour)
-            path_segment = cleaner['path'][start_time:time]
+        cluster_id = cleaner.cleaner_id
+        # 获取该区域内的所有节点
+        nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
+        if not nodes_in_cluster:
+            continue
 
-            # Draw the path segment (just the previous hour's segment)
-            plt.plot([graph.node_positions[node][0] for node in path_segment],
-                     [graph.node_positions[node][1] for node in path_segment],
-                     color='red', marker='o', markersize=5, label=f"Cleaner {cleaner['id']}")
+        # 选择一个随机的目标节点
+        target_node = random.choice(nodes_in_cluster)
 
+        if cleaner.current_node != target_node:
+            path = astar(graph, cleaner.current_node, target_node)
+            if path:
+                # 路径中的第一个节点是当前节点，移除
+                path = path[1:]
+                cleaner.set_path(path)
 
-
-        # 获取该区域内所有节点
-        nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cleaner['id']]
-
-        # 初始化清洁路径
-        cleaning_path = []
-
-        # 选取一个初始节点进行路径规划
-        current_node = cleaner['current_position']
-        for next_node in nodes_in_cluster:
-            path = astar(graph, current_node, next_node)
-            cleaner['path'].extend(path[1:])  # 跳过当前节点，避免重复
-            current_node = next_node
-
-        # 可视化当前时间下的路径
-        plt.plot([graph.node_positions[node][0] for node in cleaner['path'][start_time-1:time]],
-                 [graph.node_positions[node][1] for node in cleaner['path'][start_time-1:time]], 'r-',
-                 label=f"Cleaner {cleaner['id'] + 1}")
-
-
-# 创建动画函数
-def animate(time):
+def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
     """
     动画中每个帧的更新函数
     """
-    graph.draw(time)
+    # 每个时间步更新道路脏度
+    graph.update_dirtiness()
 
-    # 路径规划并绘制清洁车路径
-    plan_cleaning_paths(graph, cleaners, time)
+    # 为每个清洁车规划路径
+    plan_cleaning_paths(graph, cleaners, node_clusters)
 
+    # 移动每个清洁车
+    for cleaner in cleaners:
+        cleaner.move()
 
-# 创建动画
-fig, ax = plt.subplots(figsize=(10, 8))
-ani = animation.FuncAnimation(fig, animate, frames=np.arange(0, 24, 0.5), interval=500)  # interval设置为500毫秒
+    # 绘制图形，反映脏度更新和清洁车位置
+    graph.draw(ax, node_clusters)
 
-# 显示图形
-plt.show()
+    # 绘制清洁车的位置
+    for cleaner in cleaners:
+        pos = cleaner.get_position()
+        ax.plot(pos[0], pos[1], marker='o', markersize=10, markeredgecolor='black',
+                markerfacecolor='blue', label=f"Cleaner {cleaner.cleaner_id}" if time_step == 0 else "")
+
+    # 添加时间步信息
+    ax.set_title(f"校园清洁模拟 - 时间步: {time_step}", fontsize=16, fontweight='bold')
+
+def main():
+    # 创建图对象并加载数据
+    graph = Graph()
+    graph.load_edges_from_csv('Edges.csv')  # 加载边数据
+    graph.load_points_from_csv('Points.csv')  # 加载点数据
+
+    # 定义区域数
+    n_clusters = 3  # 假设将地图分为3个区域
+
+    # 获取节点的聚类结果
+    node_clusters = graph.cluster_nodes(n_clusters=n_clusters)
+
+    # 初始化清洁车
+    cleaners = []
+    for cluster_id in range(n_clusters):
+        # 获取当前区域的节点
+        nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
+        if nodes_in_cluster:
+            # 随机选择一个节点作为清洁车的起始位置
+            start_node = random.choice(nodes_in_cluster)
+            graph.cleaners_positions[cluster_id] = graph.node_positions[start_node]
+
+            # 创建 Cleaner 实例
+            cleaner = Cleaner(graph=graph, start_node=start_node, cleaner_id=cluster_id)
+            cleaners.append(cleaner)
+
+    # 创建动画
+    fig, ax = plt.subplots(figsize=(12, 10))
+
+    def update(frame):
+        animate_simulation(frame, graph, cleaners, node_clusters, ax)
+
+    ani = animation.FuncAnimation(fig, update, frames=range(1, 100), interval=500, repeat=False)
+
+    # 显示图形
+    plt.show()
+
+if __name__ == "__main__":
+    main()
