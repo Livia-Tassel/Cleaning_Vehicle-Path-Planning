@@ -7,6 +7,31 @@ import numpy as np
 import random
 from sklearn.cluster import SpectralClustering
 import heapq
+import matplotlib.font_manager as fm
+
+# 设置中文字体
+def set_chinese_font():
+    # 查找系统中的中文字体，例如 SimHei 或 Microsoft YaHei
+    # 您可以根据系统中安装的字体进行调整
+    # 这里以 SimHei 为例
+    font_paths = [
+        "C:\\Windows\\Fonts\\simhei.ttf",  # Windows 系统
+        "/usr/share/fonts/truetype/arphic/SimHei.ttf",  # Linux 系统
+        "/Library/Fonts/SIMHEI.TTF"  # macOS 系统
+    ]
+    for font_path in font_paths:
+        try:
+            prop = fm.FontProperties(fname=font_path)
+            plt.rcParams['font.family'] = prop.get_name()
+            break
+        except FileNotFoundError:
+            continue
+    else:
+        # 如果没有找到中文字体，使用默认字体并禁用中文
+        plt.rcParams['font.family'] = 'DejaVu Sans'
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号 '-' 显示为方块的问题
+
+set_chinese_font()
 
 # 定义一个 Graph 类来存储图的结构
 class Graph:
@@ -15,7 +40,6 @@ class Graph:
         self.node_positions = {}  # 存储节点坐标
         self.edge_dirtiness = {}  # 存储每条边的脏度
         self.edge_decay = {}  # 存储每条边的脏度增长系数
-        self.cleaners_positions = {}  # 用于存储每个清洁车的位置
 
     def add_edge(self, start, end, length):
         """
@@ -33,7 +57,7 @@ class Graph:
         """
         从 CSV 文件加载边的数据
         """
-        with open(file_path, newline='') as csvfile:
+        with open(file_path, newline='', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
             next(reader)  # 跳过标题行
             for row in reader:
@@ -44,7 +68,7 @@ class Graph:
         """
         从 CSV 文件加载点的坐标数据
         """
-        with open(file_path, newline='') as csvfile:
+        with open(file_path, newline='', encoding='utf-8') as csvfile:
             reader = csv.reader(csvfile)
             next(reader)  # 跳过标题行
             for row in reader:
@@ -184,9 +208,9 @@ class Graph:
         # 添加图例
         from matplotlib.lines import Line2D
         legend_elements = [
-            Line2D([0], [0], marker='o', color='w', label='Cluster 0', markerfacecolor='skyblue', markersize=10),
-            Line2D([0], [0], marker='o', color='w', label='Cluster 1', markerfacecolor='lightgreen', markersize=10),
-            Line2D([0], [0], marker='o', color='w', label='Cluster 2', markerfacecolor='salmon', markersize=10)
+            Line2D([0], [0], marker='o', color='w', label='区域 0', markerfacecolor='skyblue', markersize=10),
+            Line2D([0], [0], marker='o', color='w', label='区域 1', markerfacecolor='lightgreen', markersize=10),
+            Line2D([0], [0], marker='o', color='w', label='区域 2', markerfacecolor='salmon', markersize=10)
         ]
         ax.legend(handles=legend_elements, loc='upper right')
 
@@ -205,13 +229,12 @@ class Cleaner:
         self.cleaned_edges = set()  # 记录已清扫的边
         self.current_node = start_node  # 当前节点
         self.path = []  # 清洁车的路径
-        self.progress = 0  # 当前路径上的进度（0到1之间）
+        self.target_edge = None  # 当前目标边
         self.cleaner_id = cleaner_id  # 清洁车ID
 
     def set_path(self, path):
         """ 设置清洁车的路径 """
         self.path = path
-        self.progress = 0  # 重置路径进度
 
     def move(self):
         """
@@ -223,7 +246,7 @@ class Cleaner:
         next_node = self.path.pop(0)  # 获取下一个节点
         edge_key = (min(self.current_node, next_node), max(self.current_node, next_node))
 
-        # 清洁车经过的边脏度减少[10-20]
+        # 清洁车经过的边脏度减少 [10-20]
         dirtiness_decrease = random.uniform(10, 20)  # 脏度减少范围
         self.graph.decrease_dirtiness(edge_key, dirtiness_decrease)
 
@@ -280,23 +303,57 @@ def astar(graph, start, end):
 def plan_cleaning_paths(graph, cleaners, node_clusters):
     """
     为每个清洁车规划路径，确保覆盖其所属区域内的所有边
+    优先选择脏度最高的未清扫道路
     """
     for cleaner in cleaners:
+        # 获取该区域内的所有边
         cluster_id = cleaner.cleaner_id
-        # 获取该区域内的所有节点
-        nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
-        if not nodes_in_cluster:
-            continue
+        edges_in_cluster = [
+            edge for edge in graph.graph.edges()
+            if node_clusters[edge[0]] == cluster_id and node_clusters[edge[1]] == cluster_id
+        ]
 
-        # 选择一个随机的目标节点
-        target_node = random.choice(nodes_in_cluster)
+        # 筛选未清扫或脏度较高的边
+        edges_to_clean = [
+            edge for edge in edges_in_cluster
+            if graph.edge_dirtiness[(min(edge), max(edge))] > 0
+        ]
 
-        if cleaner.current_node != target_node:
-            path = astar(graph, cleaner.current_node, target_node)
-            if path:
-                # 路径中的第一个节点是当前节点，移除
-                path = path[1:]
-                cleaner.set_path(path)
+        if not edges_to_clean:
+            continue  # 该区域内所有边已清扫
+
+        # 按照脏度降序排序
+        edges_to_clean.sort(key=lambda edge: graph.edge_dirtiness[(min(edge), max(edge))], reverse=True)
+
+        # 选择脏度最高的边作为目标
+        target_edge = edges_to_clean[0]
+        # 确定目标节点（选择距离当前节点最近的端点）
+        if cleaner.current_node == target_edge[0]:
+            target_node = target_edge[1]
+        elif cleaner.current_node == target_edge[1]:
+            target_node = target_edge[0]
+        else:
+            # 选择距离当前节点较近的端点
+            distance0 = math.hypot(
+                graph.node_positions[cleaner.current_node][0] - graph.node_positions[target_edge[0]][0],
+                graph.node_positions[cleaner.current_node][1] - graph.node_positions[target_edge[0]][1]
+            )
+            distance1 = math.hypot(
+                graph.node_positions[cleaner.current_node][0] - graph.node_positions[target_edge[1]][0],
+                graph.node_positions[cleaner.current_node][1] - graph.node_positions[target_edge[1]][1]
+            )
+            target_node = target_edge[0] if distance0 < distance1 else target_edge[1]
+
+        # 如果当前路径已经指向目标边，则无需重新规划
+        if cleaner.target_edge != target_edge:
+            # 使用A*算法规划到目标边的路径
+            path_to_target = astar(graph, cleaner.current_node, target_node)
+            if path_to_target:
+                # 移除当前节点，避免重复
+                if path_to_target[0] == cleaner.current_node:
+                    path_to_target = path_to_target[1:]
+                cleaner.set_path(path_to_target)
+                cleaner.target_edge = target_edge
 
 def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
     """
@@ -319,7 +376,7 @@ def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
     for cleaner in cleaners:
         pos = cleaner.get_position()
         ax.plot(pos[0], pos[1], marker='o', markersize=10, markeredgecolor='black',
-                markerfacecolor='blue', label=f"Cleaner {cleaner.cleaner_id}" if time_step == 0 else "")
+                markerfacecolor='blue', label=f"清洁车 {cleaner.cleaner_id}" if time_step == 0 else "")
 
     # 添加时间步信息
     ax.set_title(f"校园清洁模拟 - 时间步: {time_step}", fontsize=16, fontweight='bold')
@@ -344,7 +401,6 @@ def main():
         if nodes_in_cluster:
             # 随机选择一个节点作为清洁车的起始位置
             start_node = random.choice(nodes_in_cluster)
-            graph.cleaners_positions[cluster_id] = graph.node_positions[start_node]
 
             # 创建 Cleaner 实例
             cleaner = Cleaner(graph=graph, start_node=start_node, cleaner_id=cluster_id)
