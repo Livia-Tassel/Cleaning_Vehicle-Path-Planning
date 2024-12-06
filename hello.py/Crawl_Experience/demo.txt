@@ -8,6 +8,17 @@ import random
 from sklearn.cluster import SpectralClustering
 import heapq
 import matplotlib.font_manager as fm
+import logging
+import os
+
+# 配置日志记录，将日志输出到log.txt文件
+logging.basicConfig(
+    filename='log.txt',
+    filemode='w',  # 写入模式，覆盖之前的内容
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    encoding='utf-8'
+)
 
 # 设置中文字体
 def set_chinese_font():
@@ -28,6 +39,7 @@ def set_chinese_font():
         # 如果没有找到中文字体，使用默认字体并禁用中文
         plt.rcParams['font.family'] = 'DejaVu Sans'
     plt.rcParams['axes.unicode_minus'] = False  # 解决负号 '-' 显示为方块的问题
+
 set_chinese_font()
 
 # 定义 Graph 类来存储图的结构
@@ -157,13 +169,13 @@ class Graph:
             self.edge_dirtiness[edge_key] = max(0, self.edge_dirtiness[edge_key] - amount)
 
     # 根据当前图的状态动态绘制校园地图以及节点
-    def draw(self, ax, node_clusters):
+    def draw(self, ax, node_clusters, time_step):
         """
-        绘制图，使用 matplot 库进行可视化
+        绘制图，使用 matplotlib 库进行可视化
         根据脏度随时间变化的计算来动态调整边的颜色和宽度
         """
         ax.clear()  # 清除当前图形
-        ax.set_title(f"校园清洁模拟", fontsize=16, fontweight='bold')
+        ax.set_title(f"校园清洁模拟 - 时间步: {time_step}", fontsize=16, fontweight='bold')  # 使用传入的time_step
 
         # 设置背景颜色
         ax.set_facecolor('whitesmoke')  # 灰白色
@@ -222,20 +234,22 @@ class Graph:
 
 # 定义 Cleaner 类
 class Cleaner:
-    def __init__(self, graph, speed=None, start_node=None, cleaner_id=0):
+    def __init__(self, graph, speed=None, start_node=None, cleaner_id=0, unique_id=0):
         """
         初始化清洁车
         graph: 图对象
         speed: 清洁车的速度，单位：米/秒，随机在[1, 1.5]范围内
         start_node: 清洁车的起始位置
-        cleaner_id: 清洁车的唯一ID
+        cleaner_id: 清洁车所属区域ID
+        unique_id: 清洁车的唯一ID
         """
         self.graph = graph  # 图对象
         self.speed = random.uniform(1, 1.5) if speed is None else speed  # 清洁车速度随机初始化
         self.current_node = start_node  # 当前节点
         self.path = []  # 清洁车的路径
         self.target_edge = None  # 当前目标边
-        self.cleaner_id = cleaner_id  # 清洁车ID
+        self.cleaner_id = cleaner_id  # 清洁车所属区域ID
+        self.unique_id = unique_id  # 清洁车唯一ID
 
     # 设置清洁车路径
     def set_path(self, path):
@@ -248,7 +262,7 @@ class Cleaner:
         清洁车沿路径移动，每次移动到下一个节点，并更新经过路径的脏度。
         """
         if not self.path:
-            print(f"清洁车 {self.cleaner_id} 没有路径可执行。")
+            logging.info(f"清洁车 {self.unique_id} 没有路径可执行。")
             return  # 如果没有路径，停止移动
 
         next_node = self.path.pop(0)  # 获取下一个节点
@@ -257,14 +271,14 @@ class Cleaner:
         # 清洁车经过的边脏度减少 [10-20]
         dirtiness_decrease = random.uniform(10, 20)  # 脏度减少范围
         self.graph.decrease_dirtiness(edge_key, dirtiness_decrease)
-        print(f"清洁车 {self.cleaner_id} 从节点 {self.current_node} 移动到节点 {next_node}，减少边 {edge_key} 脏度 {dirtiness_decrease:.2f}")
+        logging.info(f"清洁车 {self.unique_id} 从节点 {self.current_node} 移动到节点 {next_node}，减少边 {edge_key} 脏度 {dirtiness_decrease:.2f}")
 
         # 更新当前节点
         self.current_node = next_node
 
         # 检查是否完成路径
         if not self.path:
-            print(f"清洁车 {self.cleaner_id} 完成当前路径，准备规划新路径。")
+            logging.info(f"清洁车 {self.unique_id} 完成当前路径，准备规划新路径。")
             self.target_edge = None  # 路径完成，重置目标边
 
     # 获取清洁车
@@ -358,7 +372,7 @@ def astar(graph, start, end):
 
 # 规划每辆车清洁区域
 # 更新清洁车路径以及目标边
-def plan_cleaning_paths(graph, cleaners, node_clusters):
+def plan_cleaning_paths(graph, cleaners, node_clusters, targeted_edges):
     """
     为每个清洁车规划路径，确保覆盖其所属区域内的所有边
     优先选择脏度最高的未清扫道路
@@ -366,30 +380,35 @@ def plan_cleaning_paths(graph, cleaners, node_clusters):
     for cleaner in cleaners:
         # 只有当清洁车没有当前路径时，才规划新的路径
         if cleaner.path:
-            print(f"清洁车 {cleaner.cleaner_id} 正在执行路径，跳过规划。")
+            logging.info(f"清洁车 {cleaner.unique_id} 正在执行路径，跳过规划。")
             continue  # 清洁车当前有路径，跳过规划
 
-        # 获取清洁车各自区域内的所有边(若边节点所在区域编号等于清洁车ID则加入边集合中)
-        cluster_id = cleaner.cleaner_id
+        # 获取清洁车所属区域的边
+        cluster_id = cleaner.cleaner_id  # 使用cleaner_id作为区域ID
         edges_in_cluster = [
             edge for edge in graph.graph.edges()
-            if node_clusters[edge[0]] == cluster_id and node_clusters[edge[1]] == cluster_id
+            if node_clusters[edge[0]] == cluster_id or node_clusters[edge[1]] == cluster_id
         ]
 
-        # 在清洁车负责区域筛选脏度>0的边
+        # 在清洁车负责区域筛选脏度>0且未被其他清洁车目标化的边
         edges_to_clean = [
             edge for edge in edges_in_cluster
-            if graph.edge_dirtiness[(min(edge), max(edge))] > 0
+            if graph.edge_dirtiness[(min(edge), max(edge))] > 0 and (min(edge), max(edge)) not in targeted_edges
         ]
 
         if not edges_to_clean:
-            continue  # 该区域内所有边已清扫
+            logging.info(f"清洁车 {cleaner.unique_id} 所属区域内所有边已清扫或被其他清洁车选定。")
+            continue  # 该区域内所有边已清扫或被其他清洁车选定
 
         # 按照脏度降序排序
         edges_to_clean.sort(key=lambda edge: graph.edge_dirtiness[(min(edge), max(edge))], reverse=True)
 
         # 选择脏度最高的边作为目标
         target_edge = edges_to_clean[0]
+
+        # 标记该边为已被选定
+        targeted_edges.add(target_edge)
+
         # 确定目标节点（选择距离当前节点最近的端点）
         if cleaner.current_node == target_edge[0]:
             target_node = target_edge[1]
@@ -420,10 +439,10 @@ def plan_cleaning_paths(graph, cleaners, node_clusters):
                 # 更新清洁车路径以及目标边
                 cleaner.set_path(path_to_target)
                 cleaner.target_edge = target_edge
-                print(f"清洁车 {cleaner.cleaner_id} 规划新路径: {path_to_target}, 目标边: {target_edge}")
+                logging.info(f"清洁车 {cleaner.unique_id} 规划新路径: {path_to_target}, 目标边: {target_edge}")
 
 # 根据动画帧重绘图形
-def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
+def animate_simulation(time_step, graph, cleaners, node_clusters, ax, targeted_edges):
     """
     动画中每个帧的更新函数
     """
@@ -433,23 +452,23 @@ def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
     # 为各清洁车规划路径
     # 脏度最高作为优先级
     # A*规划路径
-    plan_cleaning_paths(graph, cleaners, node_clusters)
+    plan_cleaning_paths(graph, cleaners, node_clusters, targeted_edges)
 
     # 移动清洁车
     for cleaner in cleaners:
         cleaner.move()
 
     # 绘制图形，反映脏度更新和清洁车位置
-    graph.draw(ax, node_clusters)
+    graph.draw(ax, node_clusters, time_step)
 
     # 绘制清洁车的位置
     for cleaner in cleaners:
         pos = cleaner.get_position()
         ax.plot(pos[0], pos[1], marker='o', markersize=10, markeredgecolor='black',
-                markerfacecolor='blue', label=f"清洁车 {cleaner.cleaner_id}" if time_step == 0 else "")
+                markerfacecolor='blue')
 
-    # 添加时间步信息
-    ax.set_title(f"校园清洁模拟 - 时间步: {time_step}", fontsize=16, fontweight='bold')
+    # 添加时间步信息（已在 graph.draw 中设置，不再需要）
+    # ax.set_title(f"校园清洁模拟 - 时间步: {time_step}", fontsize=16, fontweight='bold')
 
 def main():
     # 创建图对象并加载数据
@@ -466,27 +485,39 @@ def main():
     # 初始化清洁车
     # 创建空列表 cleaners
     cleaners = []
+    # 定义每个区域的清洁车数量，按照3-2-2分配
+    cleaners_per_cluster = {0: 3, 1: 2, 2: 2}
+    unique_cleaner_id = 0  # 用于分配唯一的清洁车ID
+
+    # 用于跟踪已被选定的边，防止多辆清洁车选择同一边
+    targeted_edges = set()
+
     for cluster_id in range(n_clusters):
         # 获取当前区域的节点
         nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
         if nodes_in_cluster:
-            # 随机选择节点作为清洁车的起始位置
-            start_node = random.choice(nodes_in_cluster)
+            # 按照指定数量创建清洁车
+            num_cleaners = cleaners_per_cluster.get(cluster_id, 1)
+            for _ in range(num_cleaners):
+                # 随机选择节点作为清洁车的起始位置
+                start_node = random.choice(nodes_in_cluster)
 
-            # 创建 Cleaner 实例
-            cleaner = Cleaner(graph=graph, start_node=start_node, cleaner_id=cluster_id)
-            cleaners.append(cleaner)
+                # 创建 Cleaner 实例
+                cleaner = Cleaner(graph=graph, start_node=start_node, cleaner_id=cluster_id, unique_id=unique_cleaner_id)
+                cleaners.append(cleaner)
+                logging.info(f"初始化清洁车 {cleaner.unique_id}，所属区域 {cluster_id}，起始节点 {start_node}")
+                unique_cleaner_id += 1  # 增加唯一ID
 
     # 创建动画的绘图窗口和坐标轴(12英寸宽、10英寸高)
     fig, ax = plt.subplots(figsize=(12, 10))
 
     # 定义动画每帧的更新函数
     def update(frame):
-        animate_simulation(frame, graph, cleaners, node_clusters, ax)
+        animate_simulation(frame, graph, cleaners, node_clusters, ax, targeted_edges)
 
-    # 动画的帧数范围1-99（共99帧），每帧会传递给 update 函数作为 frame 参数
+    # 动画的帧数范围1-100（共100帧），每帧会传递给 update 函数作为 frame 参数
     # interval=500：每帧之间的时间间隔，以毫秒为单位，设置为500ms，即每秒更新2帧
-    ani = animation.FuncAnimation(fig, update, frames=range(1, 100), interval=500, repeat=False)
+    ani = animation.FuncAnimation(fig, update, frames=range(1, 101), interval=500, repeat=False)
 
     # 显示图形
     plt.show()
