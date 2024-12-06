@@ -221,9 +221,6 @@ class Graph:
         ax.legend(handles=legend_elements, loc='upper right')
 
 # 定义 Cleaner 类
-# 重点怀疑对象
-# self.cleaned_edges = set()  # 记录已清扫的边
-# path[0] # 下一节点
 class Cleaner:
     def __init__(self, graph, speed=None, start_node=None, cleaner_id=0):
         """
@@ -235,7 +232,6 @@ class Cleaner:
         """
         self.graph = graph  # 图对象
         self.speed = random.uniform(1, 1.5) if speed is None else speed  # 清洁车速度随机初始化
-        self.cleaned_edges = set()  # 记录已清扫的边
         self.current_node = start_node  # 当前节点
         self.path = []  # 清洁车的路径
         self.target_edge = None  # 当前目标边
@@ -252,6 +248,7 @@ class Cleaner:
         清洁车沿路径移动，每次移动到下一个节点，并更新经过路径的脏度。
         """
         if not self.path:
+            print(f"清洁车 {self.cleaner_id} 没有路径可执行。")
             return  # 如果没有路径，停止移动
 
         next_node = self.path.pop(0)  # 获取下一个节点
@@ -260,9 +257,15 @@ class Cleaner:
         # 清洁车经过的边脏度减少 [10-20]
         dirtiness_decrease = random.uniform(10, 20)  # 脏度减少范围
         self.graph.decrease_dirtiness(edge_key, dirtiness_decrease)
+        print(f"清洁车 {self.cleaner_id} 从节点 {self.current_node} 移动到节点 {next_node}，减少边 {edge_key} 脏度 {dirtiness_decrease:.2f}")
 
         # 更新当前节点
         self.current_node = next_node
+
+        # 检查是否完成路径
+        if not self.path:
+            print(f"清洁车 {self.cleaner_id} 完成当前路径，准备规划新路径。")
+            self.target_edge = None  # 路径完成，重置目标边
 
     # 获取清洁车
     def get_position(self):
@@ -271,11 +274,14 @@ class Cleaner:
         """
         return self.graph.node_positions[self.current_node]
 
-# 起点与终点定义？？？
 def astar(graph, start, end):
     """
     使用A*算法计算从起点到终点的最短路径
     """
+    # 确保起点和终点存在于图中
+    if start not in graph.node_positions or end not in graph.node_positions:
+        raise ValueError("起点或终点不在图中")
+
     # A*启发函数(Heuristic)
     def heuristic(node, end):
         # 获取起点与终点的坐标
@@ -286,45 +292,83 @@ def astar(graph, start, end):
 
     # 初始化优先队列(存储待扩展节点及相应代价信息)
     # heapq将元组(f, g, node)压入open_list中
-    # f为总估计代价=g+h(g为起点到当前节点的实际代价即最短距离，h为启发值)
+    # f为总估计代价=g+h(g为起点到当前节点的实际代价即最短距离，h为启发值即heuristic(node, end))
     open_list = []
-    # 首个节点为起点到终点的
+    # 首个节点(起点)
     heapq.heappush(open_list, (0 + heuristic(start, end), 0, start))  # (f, g, node)
+    # came_from记录节点的前驱节点，以便回溯路径
     came_from = {}
+    # g_costs记录起点到各节点的当前已知最小实际代价，初始化为 {start: 0}
     g_costs = {start: 0}
+    # 闭合集合，用于记录已扩展的节点
+    closed_set = set()
 
     while open_list:
+        # heapq.heappop自 open_list 中取出 f 值最小的节点(即当前最优的扩展节点)
+        # current_node为当前正在扩展的节点
+        # g为从起点到 current_node 的实际代价
         _, g, current_node = heapq.heappop(open_list)
 
+        # 如果当前节点已经被扩展，跳过
+        if current_node in closed_set:
+            continue
+
+        # 添加到闭合集合，表示已经扩展过
+        closed_set.add(current_node)
+
+        # 若 current_node 为终点 end，则已经找到由起点到终点的路径
         if current_node == end:
-            # 找到路径，回溯
+            # 空列表 path
             path = []
+            # 从终点开始，依次查找各节点的前驱节点，直到回溯到起点
             while current_node in came_from:
                 path.append(current_node)
                 current_node = came_from[current_node]
             path.append(start)
-            return path[::-1]  # 返回反向路径
+            path = path[::-1]
+            # 验证路径完整性
+            if path[0] == start and path[-1] == end:
+                return path
+            else:
+                raise RuntimeError("路径回溯错误")
 
+        # 获取当前节点的所有直接邻居
         for neighbor in graph.graph.neighbors(current_node):
             edge_key = (min(current_node, neighbor), max(current_node, neighbor))
-            distance = graph.graph[current_node][neighbor]["weight"]
+            distance = graph.graph[current_node][neighbor].get("weight", None)
+            if distance is None or distance < 0:
+                raise ValueError(f"边 ({current_node}, {neighbor}) 的权重无效")
+            # 起点到邻居节点 neighbor 的临时代价
             tentative_g = g + distance
-
+            # 若邻居节点 neighbor 已经在闭合集合中，跳过
+            if neighbor in closed_set:
+                continue
+            # 若邻居节点 neighbor 未被访问过(即不在 g_costs 中)或者找到更短的路径(tentative_g < g_costs[neighbor])
             if neighbor not in g_costs or tentative_g < g_costs[neighbor]:
+                # 记录邻居节点的前驱为 current_node
                 came_from[neighbor] = current_node
+                # 记录从起点到邻居节点的新的最优实际代价
                 g_costs[neighbor] = tentative_g
+                # 更新总估计代价
                 f_cost = tentative_g + heuristic(neighbor, end)
+                # 将邻居节点按新的 f 值加入优先队列，以备后续扩展
                 heapq.heappush(open_list, (f_cost, tentative_g, neighbor))
 
     return []  # 如果没有路径
 
 # 规划每辆车清洁区域
+# 更新清洁车路径以及目标边
 def plan_cleaning_paths(graph, cleaners, node_clusters):
     """
     为每个清洁车规划路径，确保覆盖其所属区域内的所有边
     优先选择脏度最高的未清扫道路
     """
     for cleaner in cleaners:
+        # 只有当清洁车没有当前路径时，才规划新的路径
+        if cleaner.path:
+            print(f"清洁车 {cleaner.cleaner_id} 正在执行路径，跳过规划。")
+            continue  # 清洁车当前有路径，跳过规划
+
         # 获取清洁车各自区域内的所有边(若边节点所在区域编号等于清洁车ID则加入边集合中)
         cluster_id = cleaner.cleaner_id
         edges_in_cluster = [
@@ -347,7 +391,6 @@ def plan_cleaning_paths(graph, cleaners, node_clusters):
         # 选择脏度最高的边作为目标
         target_edge = edges_to_clean[0]
         # 确定目标节点（选择距离当前节点最近的端点）
-        # 目标边其中端点即为清洁车当前位置
         if cleaner.current_node == target_edge[0]:
             target_node = target_edge[1]
         elif cleaner.current_node == target_edge[1]:
@@ -367,18 +410,19 @@ def plan_cleaning_paths(graph, cleaners, node_clusters):
 
         # 若清洁车当前路径已经指向目标边，则无需重新规划
         if cleaner.target_edge != target_edge:
-            # 使用A*算法规划到目标边的路径
+            # 使用 A* 算法规划到目标边的路径
             path_to_target = astar(graph, cleaner.current_node, target_node)
             if path_to_target:
-                # 若A*返回路径为[current_node,next_node...]
+                # 若 A* 返回路径为 [current_node, next_node, ...]
                 # 移除当前节点，避免重复
                 if path_to_target[0] == cleaner.current_node:
                     path_to_target = path_to_target[1:]
                 # 更新清洁车路径以及目标边
                 cleaner.set_path(path_to_target)
                 cleaner.target_edge = target_edge
+                print(f"清洁车 {cleaner.cleaner_id} 规划新路径: {path_to_target}, 目标边: {target_edge}")
 
-# 根据动画帧重回图形
+# 根据动画帧重绘图形
 def animate_simulation(time_step, graph, cleaners, node_clusters, ax):
     """
     动画中每个帧的更新函数
@@ -414,30 +458,34 @@ def main():
     graph.load_points_from_csv('Points.csv')  # 加载点数据
 
     # 定义区域数
-    n_clusters = 3  # 假设将地图分为3个区域
+    n_clusters = 3  # 将地图分为3个区域
 
-    # 获取节点的聚类结果
+    # 节点聚类
     node_clusters = graph.cluster_nodes(n_clusters=n_clusters)
 
     # 初始化清洁车
+    # 创建空列表 cleaners
     cleaners = []
     for cluster_id in range(n_clusters):
         # 获取当前区域的节点
         nodes_in_cluster = [node for node, cluster in node_clusters.items() if cluster == cluster_id]
         if nodes_in_cluster:
-            # 随机选择一个节点作为清洁车的起始位置
+            # 随机选择节点作为清洁车的起始位置
             start_node = random.choice(nodes_in_cluster)
 
             # 创建 Cleaner 实例
             cleaner = Cleaner(graph=graph, start_node=start_node, cleaner_id=cluster_id)
             cleaners.append(cleaner)
 
-    # 创建动画
+    # 创建动画的绘图窗口和坐标轴(12英寸宽、10英寸高)
     fig, ax = plt.subplots(figsize=(12, 10))
 
+    # 定义动画每帧的更新函数
     def update(frame):
         animate_simulation(frame, graph, cleaners, node_clusters, ax)
 
+    # 动画的帧数范围1-99（共99帧），每帧会传递给 update 函数作为 frame 参数
+    # interval=500：每帧之间的时间间隔，以毫秒为单位，设置为500ms，即每秒更新2帧
     ani = animation.FuncAnimation(fig, update, frames=range(1, 100), interval=500, repeat=False)
 
     # 显示图形
